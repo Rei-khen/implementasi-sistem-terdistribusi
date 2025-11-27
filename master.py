@@ -14,7 +14,8 @@ master_data = {}
 SLAVE_SERVERS = [
     "http://127.0.0.1:5001",
     "http://127.0.0.1:5002",
-    "http://127.0.0.1:5003"  
+    "http://127.0.0.1:5003",
+    "http://127.0.0.1:5004"  
 ]
 
 def replicate_to_slaves(key, value):
@@ -55,6 +56,12 @@ def get_data(key):
         return jsonify({key: master_data[key]}), 200
     else:
         return jsonify({"error": "Data not found"}), 404
+
+@app.route('/sync', methods=['GET'])
+def sync_data():
+    """Endpoint untuk slave agar bisa menyalin seluruh data master."""
+    print("Full data sync requested by a slave.")
+    return jsonify(master_data), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
