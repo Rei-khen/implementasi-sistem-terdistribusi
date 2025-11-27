@@ -9,6 +9,7 @@ app = Flask(__name__)
 
 # Penyimpanan data di memori (menggunakan dictionary)
 slave_data = {}
+pending_data = {} # Untuk menyimpan data sementara selama fase prepare
 
 # Alamat Master Server
 MASTER_URL = "http://127.0.0.1:5000"
@@ -40,20 +41,38 @@ def get_data(key):
     else:
         return jsonify({"error": "Data not found"}), 404
 
-@app.route('/replicate', methods=['POST'])
-def replicate_data():
-    """Endpoint internal untuk menerima data dari master."""
+@app.route('/prepare', methods=['POST'])
+def prepare():
+    """Fase 1: Menerima permintaan, menyimpannya sementara, dan memberikan suara."""
     data = request.get_json()
-    key = data.get('key')
-    value = data.get('value')
+    print(f"Slave (Port {port}) menerima permintaan PREPARE: {data}")
+    # Simpan data di 'pending'
+    global pending_data
+    pending_data = data
+    # Berikan suara setuju
+    return jsonify({"vote": "COMMIT"}), 200
+
+@app.route('/commit', methods=['POST'])
+def commit():
+    """Fase 2: Menerima perintah commit, memindahkan data dari pending ke data utama."""
+    global pending_data, slave_data
+    if not pending_data:
+        return jsonify({"error": "No pending data to commit"}), 400
     
-    if key is None or value is None:
-        return jsonify({"error": "Invalid replication data"}), 400
-        
-    # Simpan atau perbarui data
+    key = pending_data.get('key')
+    value = pending_data.get('value')
     slave_data[key] = value
-    print(f"Data replicated on slave (Port {port}): {key} = {value}")
-    return jsonify({"message": "Data replicated successfully"}), 200
+    print(f"Slave (Port {port}) COMMIT berhasil: {key} = {value}")
+    pending_data = {} # Kosongkan data pending
+    return jsonify({"message": "Commit successful"}), 200
+
+@app.route('/abort', methods=['POST'])
+def abort():
+    """Fase 2: Menerima perintah abort, membatalkan data pending."""
+    global pending_data
+    print(f"Slave (Port {port}) menerima ABORT. Transaksi dibatalkan.")
+    pending_data = {} # Kosongkan data pending
+    return jsonify({"message": "Abort successful"}), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():

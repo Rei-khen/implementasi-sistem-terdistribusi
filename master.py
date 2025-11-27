@@ -14,19 +14,8 @@ master_data = {}
 SLAVE_SERVERS = [
     "http://127.0.0.1:5001",
     "http://127.0.0.1:5002",
-    "http://127.0.0.1:5003",
-    "http://127.0.0.1:5004"  
+    "http://127.0.0.1:5003"
 ]
-
-def replicate_to_slaves(key, value):
-    """Fungsi untuk mengirim data ke semua slave secara asynchronous."""
-    for slave in SLAVE_SERVERS:
-        try:
-            # Kirim request POST ke endpoint /replicate di setiap slave
-            requests.post(f"{slave}/replicate", json={"key": key, "value": value}, timeout=0.5)
-            print(f"Replication sent to {slave} for key: {key}")
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to replicate to {slave}: {e}")
 
 @app.route('/set', methods=['POST'])
 def set_data():
@@ -38,16 +27,49 @@ def set_data():
     if key is None or value is None:
         return jsonify({"error": "Invalid data"}), 400
     
-    # 1. Simpan data di master
-    master_data[key] = value
-    print(f"Data set on master: {key} = {value}")
+    # --- Mulai 2-Phase Commit ---
+    print("\n--- Memulai 2-Phase Commit ---")
+    # Fase 1: Mengirim PREPARE ke semua slave dan mengumpulkan suara
+    votes = []
+    for slave in SLAVE_SERVERS:
+        try:
+            print(f"Mengirim PREPARE ke {slave}")
+            response = requests.post(f"{slave}/prepare", json={"key": key, "value": value}, timeout=1)
+            if response.status_code == 200 and response.json().get("vote") == "COMMIT":
+                votes.append("COMMIT")
+                print(f"Menerima suara COMMIT dari {slave}")
+            else:
+                votes.append("ABORT")
+                print(f"Menerima suara ABORT atau respons tidak valid dari {slave}")
+        except requests.exceptions.RequestException as e:
+            print(f"Gagal menghubungi {slave} untuk PREPARE: {e}")
+            votes.append("ABORT")
     
-    # 2. Replikasi data ke semua slave di background thread (asynchronous)
-    #    Ini agar master tidak perlu menunggu proses replikasi selesai
-    thread = threading.Thread(target=replicate_to_slaves, args=(key, value))
-    thread.start()
-    
-    return jsonify({"message": "Data set and replication initiated"}), 200
+    # Fase 2: Keputusan COMMIT atau ABORT
+    if "ABORT" not in votes and len(votes) == len(SLAVE_SERVERS):
+        # Jika semua setuju, kirim COMMIT
+        print("--- Keputusan: COMMIT ---")
+        for slave in SLAVE_SERVERS:
+            try:
+                requests.post(f"{slave}/commit", timeout=1)
+                print(f"Mengirim COMMIT ke {slave}")
+            except requests.exceptions.RequestException:
+                print(f"Gagal mengirim COMMIT ke {slave}, data mungkin inkonsisten!") # Ini adalah kelemahan 2PC
+        # Simpan data di master HANYA JIKA semua setuju
+        master_data[key] = value
+        print("--- Transaksi Berhasil ---")
+        return jsonify({"message": "Transaction committed successfully"}), 200
+    else:
+        # Jika ada yang menolak, kirim ABORT
+        print("--- Keputusan: ABORT ---")
+        for slave in SLAVE_SERVERS:
+            try:
+                requests.post(f"{slave}/abort", timeout=1)
+                print(f"Mengirim ABORT ke {slave}")
+            except requests.exceptions.RequestException:
+                pass # Abaikan error saat abort
+        print("--- Transaksi Dibatalkan ---")
+        return jsonify({"message": "Transaction aborted"}), 500
 
 @app.route('/get/<key>', methods=['GET'])
 def get_data(key):
